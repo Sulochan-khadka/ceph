@@ -2149,6 +2149,10 @@ test_force_promote()
 
   images_remove "${primary_cluster}" "${pool}/${image_prefix}" $(("${image_count}"-1))
   image_remove "${primary_cluster}" "${pool}/${big_image}"
+
+  # restart mirror daemon on original cluster otherwise later tests will fail
+  stop_mirrors "${secondary_cluster}"
+  start_mirrors "${primary_cluster}"
 }
 
 declare -a test_force_promote_delete_group_1=("${CLUSTER2}" "${CLUSTER1}" "${pool0}" "${image_prefix}" 5)
@@ -2240,6 +2244,9 @@ test_force_promote_delete_group()
   wait_for_group_not_present "${secondary_cluster}" "${pool}" "${group0}"
 
   images_remove "${primary_cluster}" "${pool}/${image_prefix}" "${image_count}"
+
+  # stop mirror daemon on primary cluster
+  stop_mirrors "${primary_cluster}"
 }
 
 # test force unlink time
@@ -2473,6 +2480,41 @@ test_resync()
   wait_for_group_not_present "${primary_cluster}" "${pool}" "${group0}"
 
   images_remove "${secondary_cluster}" "${pool}/${image_prefix}" "${image_count}"
+
+  # restart mirror daemon on original cluster
+  stop_mirrors "${primary_cluster}"
+  start_mirrors "${secondary_cluster}"
+}
+
+check_for_no_keys()
+{
+  local primary_cluster=$1
+  local secondary_cluster=$2
+  local cluster pools pool key_count obj_count
+
+  for cluster in ${primary_cluster} ${secondary_cluster}; do
+    echo 'cluster:'${cluster}
+    local pools
+    pools=$(CEPH_ARGS='' ceph --cluster ${cluster} osd pool ls  | grep -v "^\." | xargs)
+
+    for pool in ${pools}; do
+      echo 'pool:'${pool}
+
+      # see if the rbd_mirror_leader object exists in the pool
+      get_pool_obj_count "${cluster}" "${pool}" "rbd_mirror_leader" obj_count
+
+      # if it does then wait until there are no entries left in it
+      if [ $obj_count -gt 0 ]; then
+        count_omap_keys_with_filter "${cluster}" "${pool}" "rbd_mirror_leader" "image_map" key_count
+        if [ "${key_count}" -gt 0 ]; then
+          # TODO once issue35 has been fixed, this should be changed to an assert
+          testlog "last test left keys" 
+          delete_pools_on_clusters "${primary_cluster} ${secondary_cluster}"
+          return
+        fi
+      fi
+    done
+  done    
 }
 
 run_test()
@@ -2483,6 +2525,38 @@ run_test()
   declare -n test_parameters="$test_name"_"$test_scenario"
 
   testlog "TEST:$test_name scenario:$test_scenario parameters:" "${test_parameters[@]}"
+
+  local primary_cluster=cluster2
+  local secondary_cluster=cluster1
+
+  # If the tmpdir and cluster conf file exist then reuse the existing cluster 
+  # but stop the daemon on the primary if it was left running by the last test
+  # and check that there are no unexpected objects left
+  if [ -d "${RBD_MIRROR_TEMDIR}" ] && [ -f "${RBD_MIRROR_TEMDIR}"'/cluster1.conf' ]
+  then
+    export RBD_MIRROR_USE_EXISTING_CLUSTER=1
+
+    # need to call this before checking the current state
+    setup_tempdir
+
+    # stop mirror daemon if it has been left running on the primary cluster
+    stop_mirrors "${primary_cluster}" '-9'
+
+    # look at every pool on both clusters and check that there are no entries leftover in rbd_image_leader
+    check_for_no_keys "${primary_cluster}" "${secondary_cluster}"
+
+     # if the "mirror" pool doesn't exist then call setup to recreate all the required pools
+    local pool_count
+    get_pool_count "${primary_cluster}" 'mirror' pool_count
+    if [ 0 = ${pool_count} ]; then
+      setup
+    fi
+  else
+    setup  
+  fi
+
+  start_mirrors "${secondary_cluster}"
+
   "$test_name" "${test_parameters[@]}"
 }
 
@@ -2529,7 +2603,7 @@ run_all_tests()
   run_test_all_scenarios test_enable_disable_repeat
   run_test_all_scenarios test_empty_group_omap_keys
   #run_test_all_scenarios test_group_with_clone_image
-  #run_test_all_scenarios test_multiple_user_snapshot_time
+  run_test_all_scenarios test_multiple_user_snapshot_time
   #run_test_all_scenarios test_force_promote_delete_group
   run_test_all_scenarios test_create_group_stop_daemon_then_recreate
   #run_test_all_scenarios test_enable_mirroring_when_duplicate_group_exists
@@ -2540,22 +2614,6 @@ if [ -n "${RBD_MIRROR_SHOW_CLI_CMD}" ]; then
 else  
   set -ex
 fi  
-
-# If the tmpdir and cluster conf file exist then reuse the existing cluster
-if [ -d "${RBD_MIRROR_TEMDIR}" ] && [ -f "${RBD_MIRROR_TEMDIR}"'/cluster1.conf' ]
-then
-  export RBD_MIRROR_USE_EXISTING_CLUSTER=1
-fi
-
-setup
-
-# see if we need to (re)start rbd-mirror deamon
-pid=$(cat "$(daemon_pid_file "${CLUSTER1}")" 2>/dev/null) || :
-if [ -z "${pid}" ]
-then
-    start_mirrors "${CLUSTER1}"
-fi
-check_daemon_running "${CLUSTER1}"
 
 # restore the arguments from the cli
 set -- "${args[@]}"

@@ -488,8 +488,8 @@ setup()
     if [ -z "${RBD_MIRROR_USE_EXISTING_CLUSTER}" ]; then
         setup_cluster "${CLUSTER1}"
         setup_cluster "${CLUSTER2}"
+        setup_dummy_objects "${CLUSTER1}"
     fi
-    setup_dummy_objects "${CLUSTER1}"
     setup_pools "${CLUSTER1}" "${CLUSTER2}"
     setup_pools "${CLUSTER2}" "${CLUSTER1}"
 
@@ -2279,6 +2279,31 @@ get_group_snap_name()
     _group_snap_name="$($XMLSTARLET sel -t -v "//group_snaps/group_snap[id='${snap_id}']/snapshot" < "$CMD_STDOUT")"
 }
 
+get_pool_count()
+{
+    local cluster=$1
+    local pool_name=$2
+    local -n _count=$3
+
+    run_cmd "ceph --cluster ${cluster} osd pool ls --format xml-pretty"
+    if [ "${pool_name}" = '*' ]; then
+        _count="$($XMLSTARLET sel -t -v "count(//pools/pool_name)" < "$CMD_STDOUT")"
+    else
+        _count="$($XMLSTARLET sel -t -v "count(//pools[pool_name='${pool_name}'])" < "$CMD_STDOUT")"
+    fi
+}
+
+get_pool_obj_count()
+{
+    local cluster=$1
+    local pool=$2
+    local obj_name=$3
+    local -n _count=$4
+
+    run_cmd "rados --cluster ${cluster} -p ${pool} ls --format xml-pretty"
+    _count="$($XMLSTARLET sel -t -v "count(//objects/object[name='${obj_name}'])" < "$CMD_STDOUT")"
+}
+
 get_image_snap_id_from_group_snap_info()
 {
     local cluster=$1
@@ -2764,52 +2789,39 @@ wait_for_group_status_in_pool_dir()
     return 1
 }
 
-# useful function that attempts to delete all groups and images
-tidy()
+stop_daemons_on_clusters()
 {
-    local primary_cluster=cluster2
-    local secondary_cluster=cluster1
-    local cluster pool group group_spec image image_spec
+    local cluster_list=$1
+    local cluster
 
-    for cluster in ${primary_cluster} ${secondary_cluster}; do
+    for cluster in ${cluster_list}; do
         echo 'cluster:'${cluster}
         stop_mirrors ${cluster} '-9'
     done
+}
 
-    for cluster in ${primary_cluster} ${secondary_cluster}; do
+delete_pools_on_clusters()
+{
+    local cluster_list=$1
+    local cluster
+
+    for cluster in ${cluster_list}; do
         echo 'cluster:'${cluster}
         for pool in $(CEPH_ARGS='' ceph --cluster ${cluster} osd pool ls  | grep -v "^\." | xargs); do
             echo 'pool:'${pool}
              run_admin_cmd "ceph --cluster ${cluster} osd pool delete ${pool} ${pool} --yes-i-really-really-mean-it"
         done
     done        
+}
 
-    # following is old method that used to remove individual object rather than removing entire pools
-    : '
-    for cluster in ${primary_cluster} ${secondary_cluster}; do
-        echo 'cluster:'${cluster}
-        for pool in "${POOL}" "${PARENT_POOL}" "${POOL}/${NS1}" "${POOL}/${NS2}"; do
-            echo 'pool:'${pool}
-            for group in $(rbd --cluster ${cluster} group list ${pool} | xargs); do
-                group_spec=${pool}/${group}
-                echo 'group_spec:'${group_spec}
-                mirror_group_disable ${cluster} ${group_spec} '--force'
-                for image_spec in $(rbd --cluster ${cluster} group image list ${group_spec} | xargs); do
-                    echo 'image_spec:'"${image_spec}"
-                    mirror_image_disable ${cluster} ${image_spec} '--force'
-                    group_image_remove ${cluster} ${group_spec} ${image_spec}
-                done
-                group_remove ${cluster} ${group_spec}
-            done
-            for image in $(rbd --cluster ${cluster} list ${pool} | xargs); do
-                image_spec=${pool}/${image}
-                echo 'image_spec:'"${image_spec}"
-                mirror_image_disable ${cluster} ${image_spec} '--force'
-                image_remove ${cluster} ${image_spec}
-            done
-        done
-    done
-    '
+# useful function that attempts to delete all groups and images
+tidy()
+{
+    local primary_cluster=cluster2
+    local secondary_cluster=cluster1
+
+    stop_daemons_on_clusters "${primary_cluster} ${secondary_cluster}"
+    delete_pools_on_clusters "${primary_cluster} ${secondary_cluster}"
 }
 
 # list all groups, images and snaps
