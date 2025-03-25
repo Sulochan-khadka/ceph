@@ -66,6 +66,8 @@ export class RgwBucketFormComponent extends CdForm implements OnInit, AfterViewC
   icons = Icons;
   kmsConfigured = false;
   s3Configured = false;
+  isS3RadioEnabled = false;
+isKmsRadioEnabled = false;
   tags: Record<string, string>[] = [];
   dirtyTags = false;
   tagConfig = [
@@ -129,7 +131,7 @@ export class RgwBucketFormComponent extends CdForm implements OnInit, AfterViewC
       return !Number.isInteger(lockDays) || lockDays === 0;
     });
     this.bucketForm = this.formBuilder.group({
-      id: [{ value: null, disabled: true }],
+      id: [null],
       bid: [
         null,
         [Validators.required],
@@ -147,7 +149,7 @@ export class RgwBucketFormComponent extends CdForm implements OnInit, AfterViewC
       lock_enabled: [{ value: false, disabled: this.editing }],
       encryption_enabled: [{ value: null, disabled: !this.kmsConfigured && !this.s3Configured }], 
       encryption_type: [
-        { value: null, disabled: !this.kmsConfigured && !this.s3Configured }, 
+        null ,
         [
           CdValidators.requiredIf({
             encryption_enabled: true
@@ -196,7 +198,7 @@ export class RgwBucketFormComponent extends CdForm implements OnInit, AfterViewC
       if (data['SSE_S3']?.length > 0) {
         this.s3Configured = true;
       }
-      this.updateEncryptionControls();
+      this.toggleEncryption();
       // Set the encryption type based on the configurations
       if (this.kmsConfigured && this.s3Configured) {
         this.bucketForm.get('encryption_type').setValue('');
@@ -320,14 +322,14 @@ export class RgwBucketFormComponent extends CdForm implements OnInit, AfterViewC
     });
   }
 
-  private updateEncryptionControls() {
+  toggleEncryption() {
     if (!this.kmsConfigured && !this.s3Configured) {
       this.bucketForm.get('encryption_enabled')?.disable();
-      this.bucketForm.get('encryption_type')?.disable();
     } else {
       this.bucketForm.get('encryption_enabled')?.enable();
-      this.bucketForm.get('encryption_type')?.enable();
     }
+    this.isS3RadioEnabled = this.s3Configured;
+  this.isKmsRadioEnabled = this.kmsConfigured;
   }
 
   goToListView() {
