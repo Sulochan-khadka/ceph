@@ -1,5 +1,4 @@
 @use './src/styles/chart-tooltip';
-.chart-container canvas {
-  transform: translateY(-50%) !important;
-  max-height: 100% !important;
+.chart-container {
+  position: static !important;
 }
